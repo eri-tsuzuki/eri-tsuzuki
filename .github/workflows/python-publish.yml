@@ -1,0 +1,184 @@
+#データ前処理
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+df=pd.read_csv("train.csv")
+df2=pd.read_csv("test.csv")
+#欠損値の有無
+df.info()
+df2.info()
+#bmiに欠損値あり
+#今回は平均値で補完
+df["bmi"].fillna(df.bmi.mean(), inplace=True)
+df2["bmi"].fillna(df.bmi.mean(), inplace=True)
+#カテゴリ変数のエンコーディング,get_dummies
+#性別女性は0、男性は1
+#結婚経験あり1
+#都会なら1
+from sklearn.preprocessing import LabelEncoder
+le=LabelEncoder()
+df['gender'] = le.fit_transform(df['gender'])
+df['ever_married'] = le.fit_transform(df['ever_married'])
+df['Residence_type'] = le.fit_transform(df['Residence_type'])
+df2['gender'] = le.fit_transform(df2['gender'])
+df2['ever_married'] = le.fit_transform(df2['ever_married'])
+df2['Residence_type'] = le.fit_transform(df2['Residence_type'])
+#カテゴリ変数にするか迷いましたが、変数も何百とあるわけではないのでget_dummiesにしました。
+dfa=pd.get_dummies(df.loc[:,"smoking_status"],prefix="smoking_status")
+dfb=pd.get_dummies(df.loc[:,"work_type"],prefix="work_type")
+dfc=pd.get_dummies(df2.loc[:,"smoking_status"],prefix="smoking_status")
+dfd=pd.get_dummies(df2.loc[:,"work_type"],prefix="work_type")
+#余計なデータを消す
+df=df.drop(columns='smoking_status')
+df=df.drop(columns='work_type')
+df2=df2.drop(columns='smoking_status')
+df2=df2.drop(columns='work_type')
+#データを結合する
+df_merged_train=pd.concat([df,dfa,dfb],axis=1)
+df_merged_test=pd.concat([df2,dfc,dfd],axis=1)
+#正規化
+from sklearn.preprocessing import StandardScaler
+scaler = StandardScaler()
+df_merged_train['age'] = scaler.fit_transform(df_merged_train.loc[:, ['age']])
+df_merged_train['avg_glucose_level'] = scaler.fit_transform(df_merged_train.loc[:, ['avg_glucose_level']])
+df_merged_train['bmi'] = scaler.fit_transform(df_merged_train.loc[:, ['bmi']])
+df_merged_test['age'] = scaler.fit_transform(df_merged_test.loc[:, ['age']])
+df_merged_test['avg_glucose_level'] = scaler.fit_transform(df_merged_test.loc[:, ['avg_glucose_level']])
+df_merged_test['bmi'] = scaler.fit_transform(df_merged_test.loc[:, ['bmi']])
+df_merged_test.to_excel('./after.xlsx', sheet_name='new_sheet')
+#ロジスティック回帰,サポートベクターマシン,k-最近傍法,決定木,ランダムフォレストでいいモデルを探す
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+
+predictors = ["age", "gender", "heart_disease","smoking_status_Unknown","smoking_status_formerly smoked","smoking_status_never smoked","hypertension", "avg_glucose_level", "bmi", 
+              "ever_married", "Residence_type","smoking_status_smokes","work_type_Govt_job","work_type_Never_worked","work_type_Private","work_type_Self-employed","work_type_children"]
+
+models = []
+
+models.append(("LogisticRegression",LogisticRegression()))
+models.append(("SVC",SVC()))
+models.append(("KNeighbors",KNeighborsClassifier()))
+models.append(("DecisionTree",DecisionTreeClassifier()))
+models.append(("RandomForest",RandomForestClassifier()))
+
+#モデルの評価 交差検証
+from sklearn.model_selection import cross_val_score
+results = []
+names = []
+for name,model in models:
+    result = cross_val_score(model, df_merged_train[predictors], df_merged_train["stroke"],  cv=3)
+    names.append(name)
+    results.append(result)
+for i in range(len(names)):
+    print(names[i],results[i].mean())
+#評価よりsvcに決定
+alg = SVC()
+alg.fit(df_merged_train[predictors], df_merged_train["stroke"])
+
+predictions = alg.predict(df_merged_test[predictors])
+
+
+submission = pd.DataFrame({
+        "id": df_merged_test["id"],
+        "stroke": predictions
+    })
+
+submission.to_csv('submission.csv', index=False)
+
+#おまけ：混同行列 適合率、再現率、F値
+x = df_merged_train.drop('stroke',1)
+y = df_merged_train['stroke']
+x_train, x_test, y_train, y_test = train_test_split(x, y,test_size=0.3,random_state=0)
+from sklearn.metrics import confusion_matrix
+from sklearn.metrics import classification_report
+model=SVC(gamma=0.001,C=1)
+model.fit(x_train,y_train)
+y_pred=model.predict(x_test)
+m=confusion_matrix(y_test,y_pred)
+print('confusion matrix:\n{}'.format(m))
+print(classification_report(y_test,y_pred))
+
+
+
+#ROC曲線
+from sklearn.metrics import roc_curve,auc
+from sklearn import svm
+x = df_merged_train.drop('stroke',1)
+y = df_merged_train['stroke']
+x_train, x_test, y_train, y_test = train_test_split(x, y,test_size=0.3,random_state=0)
+model=svm.SVC(kernel='linear',probability=True,random_state=0)
+model.fit(x_train,y_train)
+y_pred=model.predict_proba(x_test)[:,1]
+
+fpr,tpr,thresholds=roc_curve(y_test,y_pred)
+auc=auc(fpr,tpr)
+plt.plot(fpr,tpr,color='red',label='ROC curve(area=%.3f)'%auc)
+plt.plot([0,1],[0,1],color='black',linestyle='-')
+plt.xlim([0.0,1.0])
+plt.ylim([0.0,1.05])
+plt.xlabel('偽陽性',fontname="MS Gothic")
+plt.ylabel('真陽性',fontname="MS Gothic")
+plt.legend(loc="best")
+
+#AUC
+from sklearn.metrics import roc_auc_score
+roc_auc_score(y_test,y_pred)
+<class 'pandas.core.frame.DataFrame'>
+RangeIndex: 4088 entries, 0 to 4087
+Data columns (total 12 columns):
+ #   Column             Non-Null Count  Dtype  
+---  ------             --------------  -----  
+ 0   id                 4088 non-null   int64  
+ 1   gender             4088 non-null   object 
+ 2   age                4088 non-null   float64
+ 3   hypertension       4088 non-null   int64  
+ 4   heart_disease      4088 non-null   int64  
+ 5   ever_married       4088 non-null   object 
+ 6   work_type          4088 non-null   object 
+ 7   Residence_type     4088 non-null   object 
+ 8   avg_glucose_level  4088 non-null   float64
+ 9   bmi                3924 non-null   float64
+ 10  smoking_status     4088 non-null   object 
+ 11  stroke             4088 non-null   int64  
+dtypes: float64(3), int64(4), object(5)
+memory usage: 383.4+ KB
+<class 'pandas.core.frame.DataFrame'>
+RangeIndex: 1022 entries, 0 to 1021
+Data columns (total 11 columns):
+ #   Column             Non-Null Count  Dtype  
+---  ------             --------------  -----  
+ 0   id                 1022 non-null   int64  
+ 1   gender             1022 non-null   object 
+ 2   age                1022 non-null   float64
+ 3   hypertension       1022 non-null   int64  
+ 4   heart_disease      1022 non-null   int64  
+ 5   ever_married       1022 non-null   object 
+ 6   work_type          1022 non-null   object 
+ 7   Residence_type     1022 non-null   object 
+ 8   avg_glucose_level  1022 non-null   float64
+ 9   bmi                985 non-null    float64
+ 10  smoking_status     1022 non-null   object 
+dtypes: float64(3), int64(3), object(5)
+memory usage: 88.0+ KB
+LogisticRegression 0.9503425795147541
+SVC 0.9505871380865321
+KNeighbors 0.9471627794063727
+DecisionTree 0.9033762011111793
+RandomForest 0.9493641656692197
+confusion matrix:
+[[1155    2]
+ [  70    0]]
+              precision    recall  f1-score   support
+
+           0       0.94      1.00      0.97      1157
+           1       0.00      0.00      0.00        70
+
+    accuracy                           0.94      1227
+   macro avg       0.47      0.50      0.48      1227
+weighted avg       0.89      0.94      0.91      1227
+
+0.5050993949870355
